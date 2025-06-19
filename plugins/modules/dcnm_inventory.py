@@ -110,6 +110,14 @@ options:
         type: bool
         required: false
         default: false
+      platform:
+        description:
+        - Switch platform that is being added to the fabric
+        - Incorrect seed ip / platform combination will result in switch discovery failure
+        choices: ['NXOS', 'CAT9K', 'CSR1000V', 'ASR', 'IOSXR', 'Other']
+        type: str
+        required: false
+        default: NXOS
       poap:
         description:
         - Configurations of switch to Bootstrap/Pre-provision.
@@ -733,6 +741,8 @@ class DcnmInventory:
 
             inv_upd = {
                 "seedIP": s_ip,
+                "platform": inv["platform"],
+                "deviceType": inv["deviceType"],
                 "snmpV3AuthProtocol": pro,
                 "username": inv["user_name"],
                 "password": inv["password"],
@@ -799,6 +809,61 @@ class DcnmInventory:
 
         self.have_create = have_switch
 
+    def get_fabric_switch_support(self, fabric_switch_support):
+        # Get Fabric details and return the supported switch list
+        # for the Fabric type
+        method = "GET"
+        path = "/rest/control/fabrics/{0}".format(self.fabric)
+        if self.nd:
+            path = self.nd_prefix + path
+        response = dcnm_send(self.module, method, path)
+        fail, self.result["changed"] = self.handle_response(response, "query")
+
+        if fail:
+            msg = "Fabric {0} not present on DCNM".format(self.fabric)
+            self.module.fail_json(msg)
+
+        if response.get("DATA"):
+            response_data = response["DATA"]
+            if response_data.get("templateFabricType") in fabric_switch_support:
+                return fabric_switch_support[response_data.get("templateFabricType")]
+
+        msg = "Fabric {0} type unsupported".format(self.fabric)
+        self.module.fail_json(msg)
+
+    def populate_switch_payload_params(self, inv, switch_support_list):
+        # Validate the switch platform against the fabric type 
+        # and update the platform and deviceType in the inventory 
+        # payload for the switch
+        inventory_platform = re.sub(r'[^a-z0-9]', '', inv.get("platform").lower())
+
+        if inventory_platform not in switch_support_list:
+            msg = "Platform {0} is not supported for fabric {1}".format(
+                inv["platform"], self.fabric
+            )
+            self.module.fail_json(msg=msg)
+
+        if inventory_platform == "nxos":
+            inv["platform"] = None
+            inv["deviceType"] = "NX-OS"
+        elif inventory_platform == "cat9k":
+            inv["platform"] = "CAT9K"
+            inv["deviceType"] = "IOS XE"
+        elif inventory_platform == "csr1000v":
+            inv["platform"] = "CSR1000V"
+            inv["deviceType"] = "IOS XE"
+        elif inventory_platform == "asr":
+            inv["platform"] = "ASR"
+            inv["deviceType"] = "IOS XE"
+        elif inventory_platform == "iosxr":
+            inv["platform"] = "IOS XR"
+            inv["deviceType"] = "IOS XR"
+        elif inventory_platform == "other":
+            inv["platform"] = "Other"
+            inv["deviceType"] = "Other"
+
+        return inv
+
     def get_want(self):
 
         want_create = []
@@ -807,6 +872,18 @@ class DcnmInventory:
 
         if not self.config:
             return
+
+        fabric_switch_support_matrix = {"Data Center VXLAN EVPN": ["nxos"], 
+                                "Enhanced Classic LAN": ["nxos"], 
+                                "Campus VXLAN EVPN": ["cat9k", "nxos"], 
+                                "BGP Fabric": ["nxos"], 
+                                "Custom Network": ["nxos", "cat9k", "csr1000v", "asr", "other"], 
+                                "Classic LAN": ["nxos"],
+                                "LAN Monitor": ["nxos"],
+                                "External Connectivity Network": ["nxos", "cat9k", "csr1000v", "asr", "other"],
+                                "Multi-Site External Network": ["nxos", "cat9k", "csr1000v", "asr", "other"]}
+        
+        switch_support = self.get_fabric_switch_support(fabric_switch_support_matrix)
 
         for inv in self.validated:
             if inv.get("poap"):
@@ -818,6 +895,7 @@ class DcnmInventory:
                 if create_rma:
                     want_create_rma.append(create_rma)
             else:
+                inv = self.populate_switch_payload_params(inv, switch_support)
                 want_create.append(self.update_create_params(inv))
 
         if not want_create and not want_create_poap and not want_create_rma:
@@ -999,6 +1077,17 @@ class DcnmInventory:
                     default="leaf",
                 ),
                 preserve_config=dict(type="bool", default=False),
+                platform=dict(
+                    type="str", 
+                    choices=[
+                        "NXOS",
+                        "CAT9K",
+                        "CSR1000V",
+                        "ASR",
+                        "IOSXR",
+                        "Other"
+                    ],
+                    default="NXOS"),
                 poap=dict(type="list"),
                 rma=dict(type="list"),
             )
