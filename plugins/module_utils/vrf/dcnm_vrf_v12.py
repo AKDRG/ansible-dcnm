@@ -37,12 +37,11 @@ from pydantic import ValidationError
 
 from ...module_utils.common.api.v1.lan_fabric.rest.top_down.fabrics.vrfs.vrfs import EpVrfGet, EpVrfPost
 from ...module_utils.common.enums.http_requests import RequestVerb
-from ...module_utils.network.dcnm.dcnm import dcnm_get_ip_addr_info, dcnm_send, get_fabric_details, get_fabric_inventory_details, get_sn_fabric_dict
+from ...module_utils.network.dcnm.dcnm import dcnm_get_ip_addr_info, dcnm_send, get_fabric_details, get_fabric_inventory_details, get_sn_fabric_dict, search_nested_json
 from .inventory_ipv4_to_serial_number import InventoryIpv4ToSerialNumber
 from .inventory_ipv4_to_switch_role import InventoryIpv4ToSwitchRole
 from .inventory_serial_number_to_ipv4 import InventorySerialNumberToIpv4
 from .inventory_serial_number_to_switch_role import InventorySerialNumberToSwitchRole
-from .model_controller_response_fabrics_easy_fabric_get import ControllerResponseFabricsEasyFabricGet
 from .model_controller_response_generic_v12 import ControllerResponseGenericV12
 from .model_controller_response_get_fabrics_vrfinfo import ControllerResponseGetFabricsVrfinfoV12
 from .model_controller_response_get_int import ControllerResponseGetIntV12
@@ -66,6 +65,7 @@ dcnm_vrf_paths: dict = {
     "GET_VRF_SWITCH": "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/top-down/fabrics/{}/vrfs/switches?vrf-names={}&serial-numbers={}",
     "GET_VRF_ID": "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/top-down/fabrics/{}/vrfinfo",
     "GET_VLAN": "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/resource-manager/vlan/{}?vlanUsageType=TOP_DOWN_VRF_VLAN",
+    "GET_NET_VRF": "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/top-down/fabrics/{}/networks?vrf-name={}",
 }
 
 
@@ -213,20 +213,26 @@ class NdfcVrf12:
         self.log.debug(msg)
 
         self.fabric_data: dict = get_fabric_details(self.module, self.fabric)
+
         msg = "self.fabric_data: "
         msg += f"{json.dumps(self.fabric_data, indent=4, sort_keys=True)}"
         self.log.debug(msg)
-
-        # self.fabric_data_model: ControllerResponseFabricsEasyFabricGet = ControllerResponseFabricsEasyFabricGet(**self.fabric_data)
-        # msg = "ZZZ: self.fabric_data_model: "
-        # msg += f"{json.dumps(self.fabric_data_model.model_dump(), indent=4, sort_keys=True)}"
-        # self.log.debug(msg)
 
         try:
             self.fabric_type: str = self.fabric_data["fabricType"]
         except KeyError:
             msg = f"{self.class_name}.__init__(): "
             msg += "'fabricType' parameter is missing from self.fabric_data."
+            self.module.fail_json(msg=msg)
+
+        try:
+            self.fabric_nvpairs: dict = self.fabric_data["nvPairs"]
+            self.fabric_l3vni_wo_vlan: bool = False
+            if self.fabric_nvpairs.get("ENABLE_L3VNI_NO_VLAN") == "true":
+                self.fabric_l3vni_wo_vlan = True
+        except KeyError:
+            msg = f"{self.class_name}.__init__(): "
+            msg += "'nvpairs' parameter is missing from self.fabric_data."
             self.module.fail_json(msg=msg)
 
         try:
@@ -744,9 +750,12 @@ class NdfcVrf12:
         for want_vrf_lite in want_vrf_lite_conn["VRF_LITE_CONN"]:
             for have_vrf_lite in have_vrf_lite_conn["VRF_LITE_CONN"]:
                 if want_vrf_lite["IF_NAME"] == have_vrf_lite["IF_NAME"]:
-                    if self.property_values_match(want_vrf_lite, have_vrf_lite, self.vrf_lite_properties):
-                        return True
-        return False
+                    if not want_vrf_lite["DOT1Q_ID"]:
+                        want_vrf_lite["DOT1Q_ID"] = have_vrf_lite["DOT1Q_ID"]
+                    if not self.property_values_match(want_vrf_lite, have_vrf_lite, self.vrf_lite_properties):
+                        return False
+                    break
+        return True
 
     def _deployment_status_match(self, want: dict, have_lan_attach_model: HaveLanAttachItem) -> bool:
         """
@@ -797,7 +806,7 @@ class NdfcVrf12:
             self.log.debug(msg)
             return False
 
-    def update_attach_params_extension_values(self, playbook_vrf_attach_model: PlaybookVrfAttachModel) -> dict:
+    def update_attach_params_extension_values(self, playbook_vrf_attach_model: PlaybookVrfAttachModel, vrf_name: str, switch_serial: str) -> dict:
         """
         # Summary
 
@@ -807,7 +816,6 @@ class NdfcVrf12:
         -   Return an empty dictionary if the attachment object's vrf_lite parameter is null.
 
         ## Raises
-
         Calls fail_json() if the vrf_lite parameter is not null and the role of the switch in the playbook
         attachment object is not one of the various border roles.
 
@@ -891,6 +899,9 @@ class NdfcVrf12:
         self.log.debug(msg)
         self.log_list_of_models(playbook_vrf_attach_model.vrf_lite)
 
+        # Get existing VRF-Lite configuration to check for existing DOT1Q IDs
+        existing_dot1q_mapping = self.get_existing_vrf_lite_dot1q_ids(switch_serial, vrf_name)
+
         extension_values: dict = {}
         extension_values["VRF_LITE_CONN"] = []
         ms_con: dict = {}
@@ -904,7 +915,23 @@ class NdfcVrf12:
                 vrf_lite_conn[param] = ""
 
             vrf_lite_conn["IF_NAME"] = playbook_vrf_lite_model.interface
-            vrf_lite_conn["DOT1Q_ID"] = playbook_vrf_lite_model.dot1q
+
+            # Only reserve new DOT1Q ID if not specified and not already existing
+            if not playbook_vrf_lite_model.dot1q:
+                existing_dot1q = existing_dot1q_mapping.get(vrf_lite_conn["IF_NAME"])
+                if existing_dot1q:
+                    msg = f"Using existing DOT1Q ID {existing_dot1q} for interface {vrf_lite_conn['IF_NAME']}"
+                    self.log.debug(msg)
+                    vrf_lite_conn["DOT1Q_ID"] = existing_dot1q
+                    playbook_vrf_lite_model.dot1q = existing_dot1q
+                else:
+                    msg = f"Reserving new DOT1Q ID for interface {vrf_lite_conn['IF_NAME']}"
+                    self.log.debug(msg)
+                    vrf_lite_conn["DOT1Q_ID"] = self.get_vrf_lite_dot1q_id(switch_serial, vrf_name, vrf_lite_conn["IF_NAME"])
+                    playbook_vrf_lite_model.dot1q = vrf_lite_conn["DOT1Q_ID"]
+            else:
+                vrf_lite_conn["DOT1Q_ID"] = playbook_vrf_lite_model.dot1q
+
             vrf_lite_conn["IP_MASK"] = playbook_vrf_lite_model.ipv4_addr
             vrf_lite_conn["NEIGHBOR_IP"] = playbook_vrf_lite_model.neighbor_ipv4
             vrf_lite_conn["IPV6_MASK"] = playbook_vrf_lite_model.ipv6_addr
@@ -925,12 +952,14 @@ class NdfcVrf12:
             else:
                 extension_values["VRF_LITE_CONN"] = copy.deepcopy(vrf_lite_connections)
 
-            extension_values["VRF_LITE_CONN"] = json.dumps(extension_values["VRF_LITE_CONN"])
-
-            msg = "Returning extension_values: "
+            msg = "Building extension_values: "
             msg += f"{json.dumps(extension_values, indent=4, sort_keys=True)}"
             self.log.debug(msg)
 
+        extension_values["VRF_LITE_CONN"] = json.dumps(extension_values["VRF_LITE_CONN"])
+        msg = "Returning extension_values: "
+        msg += f"{json.dumps(extension_values, indent=4, sort_keys=True)}"
+        self.log.debug(msg)
         return copy.deepcopy(extension_values)
 
     def transmute_attach_params_to_payload(self, vrf_attach_model: PlaybookVrfAttachModel, vrf_name: str, deploy: bool, vlan_id: int) -> dict:
@@ -994,7 +1023,7 @@ class NdfcVrf12:
             msg += f"{ip_address} with role {role} need review."
             self.module.fail_json(msg=msg)
 
-        extension_values = self.update_attach_params_extension_values(playbook_vrf_attach_model=vrf_attach_model)
+        extension_values = self.update_attach_params_extension_values(playbook_vrf_attach_model=vrf_attach_model, vrf_name=vrf_name, switch_serial=serial_number)
         if extension_values:
             attach.update({"extensionValues": json.dumps(extension_values).replace(" ", "")})
         else:
@@ -1141,10 +1170,13 @@ class NdfcVrf12:
         # remove it here (as we did with the other params that are
         # compared in the call to self.dict_values_differ())
         vlan_id_want = str(json_to_dict_want.get("vrfVlanId", ""))
+        vrfSegmentId_want = json_to_dict_want.get("vrfSegmentId")
 
         skip_keys = []
         if vlan_id_want == "0":
             skip_keys = ["vrfVlanId"]
+        if vrfSegmentId_want is None:
+            skip_keys.append("vrfSegmentId")
         try:
             templates_differ = self.dict_values_differ(dict1=json_to_dict_want, dict2=json_to_dict_have, skip_keys=skip_keys)
         except ValueError as error:
@@ -1206,7 +1238,7 @@ class NdfcVrf12:
             fabric=self.fabric,
             service_vrf_template=vrf_playbook_model.service_vrf_template or "",
             source=None,
-            vrf_id=vrf_playbook_model.vrf_id or 0,
+            vrf_id=vrf_playbook_model.vrf_id or None,
             vrf_name=vrf_playbook_model.vrf_name,
             vrf_extension_template=vrf_playbook_model.vrf_extension_template or "Default_VRF_Extension_Universal",
             vrf_template=vrf_playbook_model.vrf_template or "Default_VRF_Universal",
@@ -1242,6 +1274,14 @@ class NdfcVrf12:
         msg += f"vrf: {json.dumps(vrf, indent=4, sort_keys=True)}"
         self.log.debug(msg)
 
+        # Handle L3VNI W/O VLAN default from fabric setting
+        if "l3vni_wo_vlan" not in vrf and self.fabric_l3vni_wo_vlan:
+            vrf["l3vni_wo_vlan"] = self.fabric_l3vni_wo_vlan
+
+        msg = "l3vni_wo_vlan settings"
+        msg += f"vrf: {json.dumps(vrf, indent=4, sort_keys=True)}"
+        msg += f"self.fabric_l3vni_wo_vlan: {self.fabric_l3vni_wo_vlan}"
+        self.log.debug(msg)
         validated_template_config = VrfTemplateConfigV12.model_validate(vrf)
         template = validated_template_config.model_dump_json(by_alias=True)
 
@@ -1415,6 +1455,109 @@ class NdfcVrf12:
         self.log_list_of_models(validated_response.DATA)
 
         return validated_response.DATA
+
+    def get_existing_vrf_lite_dot1q_ids(self, switch_serial: str, vrf_name: str) -> dict:
+        """
+        Get existing DOT1Q IDs for VRF-Lite interfaces on a switch.
+        
+        Returns:
+            dict: Mapping of interface_name -> dot1q_id for existing VRF-Lite connections
+        """
+        caller = inspect.stack()[1][3]
+        
+        msg = "ENTERED. "
+        msg += f"caller: {caller}. switch_serial: {switch_serial}, vrf_name: {vrf_name}"
+        self.log.debug(msg)
+        
+        try:
+            params = {
+                "fabric": self.fabric,
+                "serialNumber": switch_serial,
+                "vrfName": vrf_name,
+            }
+            lite_objects = self.get_list_of_vrfs_switches_data_item_model(params)
+            
+            dot1q_mapping = {}
+            
+            for sdl in lite_objects:
+                for epv in sdl.switch_details_list:
+                    if not epv.extension_values:
+                        continue
+                        
+                    ext_values = epv.extension_values
+                    if hasattr(ext_values, 'vrf_lite_conn') and ext_values.vrf_lite_conn:
+                        for vrf_lite_conn_model in ext_values.vrf_lite_conn.vrf_lite_conn:
+                            if (vrf_lite_conn_model.auto_vrf_lite_flag != "NA" and 
+                                vrf_lite_conn_model.if_name and 
+                                vrf_lite_conn_model.dot1q_id):
+                                dot1q_mapping[vrf_lite_conn_model.if_name] = vrf_lite_conn_model.dot1q_id
+            
+            msg = f"Existing DOT1Q mapping: {dot1q_mapping}"
+            self.log.debug(msg)
+            return dot1q_mapping
+            
+        except Exception as error:
+            msg = f"Error getting existing DOT1Q IDs: {error}. Returning empty mapping."
+            self.log.debug(msg)
+            return {}
+
+    def get_vrf_lite_dot1q_id(self, serial_number: str, vrf_name: str, interface: str) -> str:
+            """
+            # Summary
+
+            Given a switch serial, vrf name and ifname, return the dot1q ID
+            reserved for the vrf_lite extension on that switch.
+
+            ## Raises
+
+            Calls fail_json if DNCM fails to reserve the dot1q ID.
+            """
+            caller = inspect.stack()[1][3]
+
+            msg = "ENTERED. "
+            msg += f"caller: {caller}. self.model_enabled: {self.model_enabled}."
+            msg += f"Serial_number: {serial_number}"
+            msg += f"VRF Name: {vrf_name}"
+            msg += f"Interface: {interface}"
+            self.log.debug(msg)
+
+            path = "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest"
+            path += "/resource-manager/reserve-id"
+
+            dot1q_id: int = None
+            payload: dict = {
+                    "scopeType": "DeviceInterface",
+                    "usageType": "TOP_DOWN_L3_DOT1Q",
+                    "serialNumber": serial_number,
+                    "ifName": interface,
+                    "allocatedTo": vrf_name
+            }
+
+            args = SendToControllerArgs(
+                action="release_resources",
+                path=path,
+                verb=RequestVerb.POST,
+                payload=json.dumps(payload),
+                log_response=True,
+                is_rollback=False,
+            )
+            self.send_to_controller(args)
+            resp = copy.deepcopy(self.response)
+
+            generic_response = ControllerResponseGenericV12(**resp)
+
+            fail, self.result["changed"] = self.handle_response(generic_response, action="reserve_resource")
+
+            dot1q_id = resp.get("DATA")
+            if fail or not dot1q_id:
+                self.failure(resp)
+
+            msg += f"Successfully obtained dot1q ID {dot1q_id} for vrf_lite extension on switch "
+            msg += f"{serial_number} for vrf {vrf_name} and interface {interface}. "
+            msg += f"Response: {resp}"
+            self.log.debug(msg)
+
+            return str(dot1q_id)
 
     def populate_have_create(self, vrf_object_models: list[VrfObjectV12]) -> None:
         """
@@ -2323,7 +2466,22 @@ class NdfcVrf12:
             return
 
         all_vrfs.update({vrf for vrf in self.want_deploy.get("vrfNames", "").split(",") if vrf})
-        self.diff_deploy.update({"vrfNames": ",".join(all_vrfs)})
+
+        modified_all_vrfs = all_vrfs.copy()      
+        for vrf in all_vrfs:
+            # If the playbook sets the deploy key to False, then we need to remove the vrf from the deploy list.
+            want_vrf_data = self.find_dict_in_list_by_key_value(search=self.config, key="vrf_name", value=vrf)
+            if want_vrf_data.get('deploy', True) is False:
+                modified_all_vrfs.remove(vrf)
+
+        if modified_all_vrfs:
+            if not self.diff_deploy:
+                self.diff_deploy.update({"vrfNames": ",".join(modified_all_vrfs)})
+            else:
+                vrfs = self.diff_deploy["vrfNames"] + "," + ",".join(modified_all_vrfs)
+                self.diff_deploy.update({"vrfNames": vrfs})
+        else:
+            self.diff_deploy.update({"vrfNames": ",".join(all_vrfs)})
 
         msg = "self.diff_attach: "
         msg += f"{json.dumps(self.diff_attach, indent=4)}"
@@ -2417,7 +2575,6 @@ class NdfcVrf12:
                 want_c.update({"vrfId": vrf_id})
 
                 want_c.update({"vrfTemplateConfig": self.update_vrf_template_config(want_c)})
-                want_c["vrfTemplateConfig"]["vrfSegmentId"] = vrf_id
 
                 diff_create_quick.append(want_c)
 
@@ -2558,8 +2715,19 @@ class NdfcVrf12:
             if vrf_to_deploy:
                 all_vrfs.add(vrf_to_deploy)
 
-        if len(all_vrfs) != 0:
-            diff_deploy.update({"vrfNames": ",".join(all_vrfs)})
+        modified_all_vrfs = all_vrfs.copy()
+        for vrf in all_vrfs:
+            # If the playbook sets the deploy key to False, then we need to remove the vrf from the deploy list.
+            want_vrf_data = self.find_dict_in_list_by_key_value(search=self.config, key="vrf_name", value=vrf)
+            if want_vrf_data.get("deploy") is False:
+                modified_all_vrfs.remove(vrf)
+
+        if modified_all_vrfs:
+            if not diff_deploy:
+                diff_deploy.update({"vrfNames": ",".join(modified_all_vrfs)})
+            else:
+                vrfs = self.diff_deploy["vrfNames"] + "," + ",".join(modified_all_vrfs)
+                diff_deploy.update({"vrfNames": vrfs})
 
         self.diff_attach = copy.deepcopy(diff_attach)
         self.diff_deploy = copy.deepcopy(diff_deploy)
@@ -3735,7 +3903,7 @@ class NdfcVrf12:
             )
             self.send_to_controller(args)
 
-    def release_orphaned_resources(self, vrf: str, is_rollback=False) -> None:
+    def release_orphaned_resources(self, vrf_del_list: list, is_rollback=False) -> None:
         """
         # Summary
 
@@ -3751,6 +3919,8 @@ class NdfcVrf12:
         - allocatedFlag is False
         - entityName == vrf
         - fabricName == self.fabric
+        - switchName is not None
+        - ipAddress is not None
 
         ```json
         [
@@ -3788,46 +3958,62 @@ class NdfcVrf12:
 
         path = "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/"
         path += f"resource-manager/fabric/{self.fabric}/"
-        path += "pools/TOP_DOWN_VRF_VLAN"
 
-        args = SendToControllerArgs(
-            action="release_resources",
-            path=path,
-            verb=RequestVerb.GET,
-            payload=None,
-            log_response=False,
-            is_rollback=False,
-        )
-        self.send_to_controller(args)
-        resp = copy.deepcopy(self.response)
-
-        generic_response = ControllerResponseGenericV12(**resp)
-
-        fail, self.result["changed"] = self.handle_response(generic_response, action="release_resources")
-
-        if fail:
-            if is_rollback:
-                self.failed_to_rollback = True
-                return
-            self.failure(resp)
-
-        delete_ids: list = []
-        for item in resp["DATA"]:
-            if "entityName" not in item:
-                continue
-            if item["entityName"] != vrf:
-                continue
-            if item.get("allocatedFlag") is not False:
-                continue
-            if item.get("id") is None:
-                continue
-
-            msg = f"item {json.dumps(item, indent=4, sort_keys=True)}"
+        resource_pool = ["TOP_DOWN_VRF_VLAN", "TOP_DOWN_L3_DOT1Q"]
+        for pool in resource_pool:
+            msg = f"Processing orphaned resources in pool:{pool}"
             self.log.debug(msg)
+            req_path = path + f"pools/{pool}"
 
-            delete_ids.append(item["id"])
+            args = SendToControllerArgs(
+                action="release_resources",
+                path=req_path,
+                verb=RequestVerb.GET,
+                payload=None,
+                log_response=False,
+                is_rollback=False,
+            )
+            self.send_to_controller(args)
+            resp = copy.deepcopy(self.response)
 
-        self.release_resources_by_id(delete_ids)
+            generic_response = ControllerResponseGenericV12(**resp)
+
+            fail, self.result["changed"] = self.handle_response(generic_response, action="release_resources")
+
+            if fail:
+                if is_rollback:
+                    self.failed_to_rollback = True
+                    return
+                self.failure(resp)
+
+            delete_ids: list = []
+
+            for item in generic_response.DATA:
+                if "entityName" not in item:
+                    continue
+                if item.get("entityName") not in vrf_del_list:
+                    continue
+                if item.get("allocatedFlag") is not False:
+                    continue
+                if item.get("id") is None:
+                    continue
+                # Resources with no ipAddress or switchName
+                # are invalid and of Fabric's scope and
+                # should not be attempted to be deleted here.
+                if not item.get("ipAddress"):
+                    continue
+                if not item.get("switchName"):
+                    continue
+
+                msg = f"item {json.dumps(item, indent=4, sort_keys=True)}"
+                self.log.debug(msg)
+
+                delete_ids.append(item["id"])
+
+            if delete_ids:
+                msg = f"Releasing orphaned resources with IDs:{delete_ids}"
+                self.log.debug(msg)
+                self.release_resources_by_id(delete_ids)
 
     def push_to_remote(self, is_rollback=False) -> None:
         """
@@ -3852,6 +4038,7 @@ class NdfcVrf12:
         # attachment being deleted is re-used on a new vrf attachment being
         # created. This is needed specially for state: overridden
 
+        self.check_vrf_network_attachments()
         self.push_diff_detach(is_rollback=is_rollback)
         self.push_diff_undeploy(is_rollback=is_rollback)
 
@@ -3859,8 +4046,14 @@ class NdfcVrf12:
         self.log.debug(msg)
 
         self.push_diff_delete(is_rollback=is_rollback)
+
+        vrf_del_list = []
         for vrf_name in self.diff_delete:
-            self.release_orphaned_resources(vrf=vrf_name, is_rollback=is_rollback)
+            vrf_del_list.append(vrf_name)
+
+        if vrf_del_list:
+            msg += f"VRF(s) to be deleted: {vrf_del_list}."
+            self.release_orphaned_resources(vrf_del_list, is_rollback)
 
         self.push_diff_create(is_rollback=is_rollback)
         self.push_diff_attach_model(is_rollback=is_rollback)
@@ -3885,6 +4078,7 @@ class NdfcVrf12:
         # attachment being deleted is re-used on a new vrf attachment being
         # created. This is needed specially for state: overridden
 
+        self.check_vrf_network_attachments()
         self.push_diff_detach(is_rollback=is_rollback)
         self.push_diff_undeploy(is_rollback=is_rollback)
 
@@ -3892,12 +4086,68 @@ class NdfcVrf12:
         self.log.debug(msg)
 
         self.push_diff_delete(is_rollback=is_rollback)
+
+        vrf_del_list = []
         for vrf_name in self.diff_delete:
-            self.release_orphaned_resources(vrf=vrf_name, is_rollback=is_rollback)
+            vrf_del_list.append(vrf_name)
+
+        if vrf_del_list:
+            msg += f"VRF(s) to be deleted: {vrf_del_list}."
+            self.release_orphaned_resources(vrf_del_list, is_rollback)
 
         self.push_diff_create(is_rollback=is_rollback)
         self.push_diff_attach_model(is_rollback=is_rollback)
         self.push_diff_deploy(is_rollback=is_rollback)
+
+    def check_vrf_network_attachments(self) -> None:
+        """
+        # Summary
+
+        Check if VRFs have associated network attachments.
+
+        ## Raises
+
+        Calls fail_json if VRF has associated network attachments.
+        """
+        caller = inspect.stack()[1][3]
+
+        msg = "ENTERED. "
+        msg += f"caller: {caller}. self.model_enabled: {self.model_enabled}."
+        self.log.debug(msg)
+
+        msg = "self.diff_delete: "
+        msg += f"{json.dumps(self.diff_delete, indent=4, sort_keys=True)}"
+        self.log.debug(msg)
+
+        for vrf_name in self.diff_delete:
+            msg = f"vrf_name: {vrf_name}"
+            self.log.debug(msg)
+
+            path: str = self.paths["GET_NET_VRF"].format(self.fabric, vrf_name)
+            args = SendToControllerArgs(
+                action="query",
+                path=path,
+                verb=RequestVerb.GET,
+                payload=None,
+                log_response=False,
+                is_rollback=False,
+            )
+            self.send_to_controller(args)
+            
+            response = copy.deepcopy(self.response)
+            msg = "response: "
+            msg += f"{json.dumps(response, indent=4, sort_keys=True)}"
+            self.log.debug(msg)
+            
+            if response.get("DATA") is None:
+                msg = f"Invalid Response from Controller. {response}"
+                self.module.fail_json(msg=msg)
+            elif response["DATA"] != []:
+                msg = f"{vrf_name} in fabric: {self.fabric} has associated network attachments. "
+                self.log.debug("%s. Number of networks: %d", msg, len(response['DATA']))
+                msg += "Please remove the network attachments "
+                msg += "before deleting the VRF. (maybe using dcnm_network module)"
+                self.module.fail_json(msg=msg)
 
     def wait_for_vrf_del_ready(self, vrf_name: str = "not_supplied") -> None:
         """
@@ -3925,6 +4175,7 @@ class NdfcVrf12:
         for vrf in self.diff_delete:
             ok_to_delete: bool = False
             path: str = self.paths["GET_VRF_ATTACH"].format(self.fabric, vrf)
+            retry_count = max(100 // self.wait_time_for_delete_loop, 1)
 
             while not ok_to_delete:
                 args = SendToControllerArgs(
@@ -3957,28 +4208,18 @@ class NdfcVrf12:
                     if attach["lanAttachState"] == "OUT-OF-SYNC" or attach["lanAttachState"] == "FAILED":
                         self.diff_delete.update({vrf: "OUT-OF-SYNC"})
                         break
-                    if attach["lanAttachState"] == "DEPLOYED" and attach["isLanAttached"] is True:
-                        vrf_name = attach.get("vrfName", "unknown")
-                        fabric_name: str = attach.get("fabricName", "unknown")
-                        switch_ip: str = attach.get("ipAddress", "unknown")
-                        switch_name: str = attach.get("switchName", "unknown")
-                        vlan_id: str = attach.get("vlanId", "unknown")
-                        msg = f"Network attachments associated with vrf {vrf_name} "
-                        msg += "must be removed (e.g. using the dcnm_network module) "
-                        msg += "prior to deleting the vrf. "
-                        msg += f"Details: fabric_name: {fabric_name}, "
-                        msg += f"vrf_name: {vrf_name}. "
-                        msg += "Network attachments found on "
-                        msg += f"switch_ip: {switch_ip}, "
-                        msg += f"switch_name: {switch_name}, "
-                        msg += f"vlan_id: {vlan_id}"
-                        self.module.fail_json(msg=msg)
                     if attach["lanAttachState"] != "NA":
                         time.sleep(self.wait_time_for_delete_loop)
                         self.diff_delete.update({vrf: "DEPLOYED"})
                         ok_to_delete = False
                         break
                     self.diff_delete.update({vrf: "NA"})
+                if retry_count <= 0:
+                    msg = "Timeout waiting for VRF to be ready for deletion. "
+                    msg += f"vrf: {vrf}, "
+                    msg += f"response: {response}"
+                    self.module.fail_json(msg=msg)
+                retry_count -= 1
 
     def validate_input(self) -> None:
         """Parse the playbook values, validate to param specs."""
@@ -4258,6 +4499,9 @@ class NdfcVrf12:
             changed = False
             return fail, changed
         if response_model.ERROR != "":
+            fail = True
+            changed = False
+        if search_nested_json((response_model.DATA), "fail"):
             fail = True
             changed = False
         if action == "attach" and "is in use already" in str(response_model.DATA):

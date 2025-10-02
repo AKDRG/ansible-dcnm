@@ -50,6 +50,7 @@ class VrfTemplateConfigV12(BaseModel):
         alias="ipv6LinkLocalFlag",
         description="Enables IPv6 link-local Option under VRF SVI. Not applicable to L3VNI w/o VLAN config.",
     )
+    l3vni_wo_vlan: bool = Field(default=False, alias="enableL3VniNoVlan", description="Enable L3 VNI without VLAN configuration")
     loopback_route_tag: int = Field(default=12345, ge=0, le=4294967295, alias="tag", description="Loopback routing tag")
     max_bgp_paths: int = Field(
         default=1,
@@ -70,6 +71,7 @@ class VrfTemplateConfigV12(BaseModel):
     no_rp: bool = Field(default=False, alias="isRPAbsent", description="There is no RP in TRMv4 as only SSM is used")
     overlay_mcast_group: str = Field(default="", alias="multicastGroup", description="Overlay Multicast group")
     redist_direct_rmap: str = Field(default="FABRIC-RMAP-REDIST-SUBNET", alias="vrfRouteMap", description="VRF route map")
+    v6_redist_direct_rmap: str = Field(default="FABRIC-RMAP-REDIST-SUBNET", alias="v6VrfRouteMap", description="VRF v6 route map")
     rp_address: str = Field(
         default="",
         alias="rpAddress",
@@ -85,9 +87,9 @@ class VrfTemplateConfigV12(BaseModel):
     )
     trm_enable: bool = Field(default=False, alias="trmEnabled", description="Enable IPv4 Tenant Routed Multicast (TRMv4)")
     underlay_mcast_ip: str = Field(default="", alias="L3VniMcastGroup", description="L3 VNI multicast group")
-    vlan_id: int = Field(default=0, ge=0, le=4094, alias="vrfVlanId", description="VRF VLAN ID")
+    vlan_id: Union[int, str] = Field(default=0, alias="vrfVlanId", description="VRF VLAN ID")
     vrf_description: str = Field(default="", alias="vrfDescription", description="VRF description")
-    vrf_id: int = Field(..., ge=1, le=16777214, alias="vrfSegmentId", description="VRF segment ID")
+    vrf_id: Optional[int] = Field(default=None, alias="vrfSegmentId", description="VRF segment ID")
     vrf_int_mtu: int = Field(default=9216, ge=68, le=9216, alias="mtu", description="VRF interface MTU")
     vrf_intf_desc: str = Field(default="", alias="vrfIntfDescription", description="VRF interface description")
     vrf_name: str = Field(..., alias="vrfName", description="VRF name")
@@ -139,17 +141,18 @@ class VrfTemplateConfigV12(BaseModel):
 
     @field_validator("vlan_id", mode="before")
     @classmethod
-    def preprocess_vlan_id(cls, data: Any) -> int:
+    def preprocess_vlan_id(cls, data: Any, info) -> Union[int, str]:
         """
-        Preprocess the vlan_id field to ensure it is an integer.
-
-        ## Raises
-
-        - ValueError: If vlan_id is not an integer or string representing an integer
-        - ValueError: If vlan_id is 1
+        Preprocess the vlan_id field to ensure it is an integer or empty string for L3VNI without VLAN.
         """
         if data is None:
             return 0
+        # Check if we have access to other field values through info.data
+        if hasattr(info, 'data') and info.data:
+            l3vni_wo_vlan = info.data.get("enableL3VniNoVlan", info.data.get("l3vni_wo_vlan", False))
+            if l3vni_wo_vlan:
+                return ""
+        
         if isinstance(data, str):
             try:
                 data = int(data)
@@ -163,7 +166,33 @@ class VrfTemplateConfigV12(BaseModel):
             msg = "vlan_id (vrfVlanId) must not be 1. "
             msg += f"Got: {data}"
             raise ValueError(msg)
-        # Further validation is done in the model_validator
+        return data
+
+    @field_validator("vrf_id", mode="before")
+    @classmethod
+    def validate_vrf_id(cls, data: Any) -> Optional[int]:
+        """
+        Validate VRF ID field.
+        
+        - If None or empty string, return None
+        - If valid integer, ensure it's in range 1-16777214
+        - If string, convert to int and validate range
+        """
+        if data is None or data == "":
+            return None
+        
+        if isinstance(data, str):
+            try:
+                data = int(data)
+            except ValueError as error:
+                msg = f"vrf_id (vrfSegmentId) must be an integer or None. Got: {data} of type {type(data)}. Error: {error}"
+                raise ValueError(msg) from error
+        
+        if isinstance(data, int):
+            if not (1 <= data <= 16777214):
+                msg = f"vrf_id (vrfSegmentId) must be between 1 and 16777214 or None. Got: {data}"
+                raise ValueError(msg)
+        
         return data
 
     @model_validator(mode="before")
@@ -184,6 +213,16 @@ class VrfTemplateConfigV12(BaseModel):
         if isinstance(data, VrfTemplateConfigV12):
             pass
         return data
+
+    # @model_validator(mode="after")
+    # def validate_l3vni_without_vlan_config(self) -> "VrfTemplateConfigV12":
+    #     """
+    #     Handle L3VNI without VLAN configuration
+    #     """
+    #     if self.l3vni_wo_vlan:
+    #         # For L3VNI without VLAN, these fields should be cleared
+    #         self.vlan_id = ""
+    #     return self
 
     # Replace rp_loopback_id validator with this one when python 3.10 is the minimum version supported
     '''

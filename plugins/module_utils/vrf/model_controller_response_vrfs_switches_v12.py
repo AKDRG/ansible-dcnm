@@ -170,7 +170,7 @@ class ControllerResponseVrfsSwitchesSwitchDetails(BaseModel):
     role: str
     serial_number: str = Field(alias="serialNumber")
     switch_name: str = Field(alias="switchName")
-    vlan: int = Field(alias="vlan", ge=2, le=4094)
+    vlan: Optional[int] = Field(alias="vlan", ge=0, le=4094)
     vlan_modifiable: bool = Field(alias="vlanModifiable")
 
     @field_validator("extension_prototype_values", mode="before")

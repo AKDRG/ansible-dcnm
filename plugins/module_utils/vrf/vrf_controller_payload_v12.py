@@ -7,7 +7,7 @@ Verb: POST
 """
 
 import warnings
-from typing import Union
+from typing import Union, Optional, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PydanticExperimentalWarning, field_serializer, field_validator, model_validator
 from typing_extensions import Self
@@ -109,10 +109,37 @@ class VrfPayloadV12(BaseModel):
     source: Union[str, None] = Field(default=None)
     tenant_name: str = Field(alias="tenantName", default="")
     vrf_extension_template: str = Field(alias="vrfExtensionTemplate", default="Default_VRF_Extension_Universal")
-    vrf_id: int = Field(..., alias="vrfId", ge=1, le=16777214)
+    vrf_id: Optional[int] = Field(default=None, alias="vrfId", description="VRF ID")
     vrf_name: str = Field(..., alias="vrfName", min_length=1, max_length=32, description="Name of the VRF, 1-32 characters.")
     vrf_template: str = Field(alias="vrfTemplate", default="Default_VRF_Universal")
     vrf_template_config: VrfTemplateConfigV12 = Field(alias="vrfTemplateConfig")
+
+    @field_validator("vrf_id", mode="before")
+    @classmethod
+    def validate_vrf_id(cls, data: Any) -> Optional[int]:
+        """
+        Validate VRF ID field.
+        
+        - If None or empty string, return None
+        - If valid integer, ensure it's in range 1-16777214
+        - If string, convert to int and validate range
+        """
+        if data is None or data == "":
+            return None
+        
+        if isinstance(data, str):
+            try:
+                data = int(data)
+            except ValueError as error:
+                msg = f"vrf_id (vrfSegmentId) must be an integer or None. Got: {data} of type {type(data)}. Error: {error}"
+                raise ValueError(msg) from error
+        
+        if isinstance(data, int):
+            if not (1 <= data <= 16777214):
+                msg = f"vrf_id (vrfSegmentId) must be between 1 and 16777214 or None. Got: {data}"
+                raise ValueError(msg)
+        
+        return data
 
     @field_serializer("vrf_template_config")
     def serialize_vrf_template_config(self, vrf_template_config: VrfTemplateConfigV12) -> str:
