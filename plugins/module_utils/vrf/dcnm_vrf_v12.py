@@ -186,6 +186,7 @@ class NdfcVrf12:
         # another vrf. Without this additional logic, the create+attach+deploy
         # go out first and complain the VLAN is already in use.
         self.diff_detach: list = []
+        self.chg_deploy: dict = {}
         self.have_deploy: dict = {}
         self.have_deploy_model: PayloadVrfsDeployments = None
         self.want_deploy: dict = {}
@@ -223,6 +224,13 @@ class NdfcVrf12:
         except KeyError:
             msg = f"{self.class_name}.__init__(): "
             msg += "'fabricType' parameter is missing from self.fabric_data."
+            self.module.fail_json(msg=msg)
+
+        try:
+            self.action_fabric_type: str = self.params["_fabric_type"]
+        except KeyError:
+            msg = f"{self.class_name}.__init__(): "
+            msg += "'fabricType' parameter is missing from self.params."
             self.module.fail_json(msg=msg)
 
         try:
@@ -1177,6 +1185,10 @@ class NdfcVrf12:
             skip_keys = ["vrfVlanId"]
         if vrfSegmentId_want is None:
             skip_keys.append("vrfSegmentId")
+        template_skip_keys = self.get_template_skip_keys()
+        if template_skip_keys:
+            skip_keys.extend(template_skip_keys)
+
         try:
             templates_differ = self.dict_values_differ(dict1=json_to_dict_want, dict2=json_to_dict_have, skip_keys=skip_keys)
         except ValueError as error:
@@ -1201,6 +1213,10 @@ class NdfcVrf12:
                 # The vrf updates with missing vrfId will have to use existing
                 # vrfId from the instance of the same vrf on DCNM.
                 want["vrfId"] = have["vrfId"]
+            if skip_keys:
+                for key in skip_keys:
+                    json_to_dict_want[key] = json_to_dict_have[key]
+                want["vrfTemplateConfig"] = json.dumps(json_to_dict_want)
             create = want
 
         msg = f"returning configuration_changed: {configuration_changed}, "
@@ -1593,7 +1609,7 @@ class NdfcVrf12:
         msg += f"{json.dumps(self.have_create, indent=4, sort_keys=True)}"
         self.log.debug(msg)
 
-    def populate_have_deploy(self, get_vrf_attach_response: dict) -> dict:
+    def populate_have_change_deploy(self, get_vrf_attach_response: dict) -> dict:
         """
         Return have_deploy, which is a dict representation of VRFs currently deployed on the controller.
 
@@ -1606,6 +1622,7 @@ class NdfcVrf12:
         self.log.debug(msg)
 
         vrfs_to_update: set[str] = set()
+        vrfs_change_deploy: set[str] = set()
 
         for vrf_attach in get_vrf_attach_response.get("DATA", []):
             if not vrf_attach.get("lanAttachList"):
@@ -1618,17 +1635,25 @@ class NdfcVrf12:
                     vrf_to_deploy = attach.get("vrfName")
                     if vrf_to_deploy:
                         vrfs_to_update.add(vrf_to_deploy)
+                if attach.get("lanAttachState") in ("OUT-OF-SYNC", "PENDING"):
+                    vrf_chg_deploy = attach.get("vrfName")
+                    if vrf_chg_deploy:
+                        vrfs_change_deploy.add(vrf_chg_deploy)
 
         have_deploy = {}
         have_deploy["vrfNames"] = ",".join(vrfs_to_update)
+        change_deploy = {}
+        change_deploy["vrfNames"] = ",".join(vrfs_change_deploy)
 
         msg = "Returning have_deploy: "
         msg += f"{json.dumps(have_deploy, indent=4)}"
+        msg = "Returning change_deploy: "
+        msg += f"{json.dumps(change_deploy, indent=4)}"
         self.log.debug(msg)
 
-        return copy.deepcopy(have_deploy)
+        return copy.deepcopy(have_deploy), copy.deepcopy(change_deploy)
 
-    def populate_have_deploy_model(self, vrf_attach_responses: list[ControllerResponseVrfsAttachmentsDataItem]) -> PayloadVrfsDeployments:
+    def populate_have_change_deploy_model(self, vrf_attach_responses: list[ControllerResponseVrfsAttachmentsDataItem]) -> PayloadVrfsDeployments:
         """
         Return PayloadVrfsDeployments, which is a model representation of VRFs currently deployed on the controller.
 
@@ -1641,6 +1666,7 @@ class NdfcVrf12:
         self.log.debug(msg)
 
         vrfs_to_update: set[str] = set()
+        vrfs_change_deploy: set[str] = set()
 
         for vrf_attach_model in vrf_attach_responses:
             if not vrf_attach_model.lan_attach_list:
@@ -1653,14 +1679,21 @@ class NdfcVrf12:
                     vrf_to_deploy = lan_attach_model.vrf_name
                     if vrf_to_deploy:
                         vrfs_to_update.add(vrf_to_deploy)
+                if lan_attach_model.lan_attach_state in ("OUT-OF-SYNC", "PENDING"):
+                    vrf_chg_deploy = lan_attach_model.vrf_name
+                    if vrf_chg_deploy:
+                        vrfs_change_deploy.add(vrf_chg_deploy)
 
         have_deploy_model = PayloadVrfsDeployments(vrf_names=vrfs_to_update)
+        change_deploy_model = PayloadVrfsDeployments(vrf_names=vrfs_change_deploy)
 
         msg = "Returning have_deploy_model: "
         msg += f"{json.dumps(have_deploy_model.model_dump(), indent=4, sort_keys=True)}"
+        msg = "Returning change_deploy_model: "
+        msg += f"{json.dumps(change_deploy_model.model_dump(), indent=4, sort_keys=True)}"
         self.log.debug(msg)
 
-        return have_deploy_model
+        return have_deploy_model, change_deploy_model
 
     def populate_have_attach_models(self, vrf_attach_models: list[ControllerResponseVrfsAttachmentsDataItem]) -> None:
         """
@@ -1809,7 +1842,7 @@ class NdfcVrf12:
 
         -   self.have_create, see populate_have_create()
         -   self.have_attach_models, see populate_have_attach_models()
-        -   self.have_deploy, see populate_have_deploy()
+        -   self.have_deploy, see populate_have_change_deploy()
         """
         caller = inspect.stack()[1][3]
         method_name = inspect.stack()[0][3]
@@ -1856,8 +1889,8 @@ class NdfcVrf12:
         if not validated_controller_response.DATA:
             return
 
-        self.have_deploy = self.populate_have_deploy(controller_response)
-        self.have_deploy_model = self.populate_have_deploy_model(validated_controller_response.DATA)
+        self.have_deploy, self.change_deploy = self.populate_have_change_deploy(controller_response)
+        self.have_deploy_model, self.change_deploy_model = self.populate_have_change_deploy_model(validated_controller_response.DATA)
         msg = "self.have_deploy_model (by_alias=True): "
         msg += f"{json.dumps(self.have_deploy_model.model_dump(by_alias=True), indent=4, sort_keys=True)}"
         self.log.debug(msg)
@@ -2259,32 +2292,33 @@ class NdfcVrf12:
 
             diff_delete.update({want_create_payload_model.vrf_name: "DEPLOYED"})
 
-            have_attach_model: HaveAttachPostMutate = self.find_model_in_list_by_key_value(
-                search=self.have_attach_models, key="vrf_name", value=want_create_payload_model.vrf_name
-            )
-            if not have_attach_model:
-                msg = f"have_attach_model not found for vrfName: {want_create_payload_model.vrf_name}. "
-                msg += "Continuing."
-                self.log.debug(msg)
-                continue
+            if self.action_fabric_type != "Child MSD":
+                have_attach_model: HaveAttachPostMutate = self.find_model_in_list_by_key_value(
+                    search=self.have_attach_models, key="vrf_name", value=want_create_payload_model.vrf_name
+                )
+                if not have_attach_model:
+                    msg = f"have_attach_model not found for vrfName: {want_create_payload_model.vrf_name}. "
+                    msg += "Continuing."
+                    self.log.debug(msg)
+                    continue
 
-            msg = "have_attach_model: "
-            msg += f"{json.dumps(have_attach_model.model_dump(by_alias=False), indent=4, sort_keys=True)}"
-            self.log.debug(msg)
-
-            detach_list_model: VrfDetachPayloadV12 = self.get_items_to_detach_model(have_attach_model.lan_attach_list)
-            if not detach_list_model:
-                msg = "detach_list_model is None. continuing."
+                msg = "have_attach_model: "
+                msg += f"{json.dumps(have_attach_model.model_dump(by_alias=False), indent=4, sort_keys=True)}"
                 self.log.debug(msg)
-                continue
-            msg = f"detach_list_model: length(lan_attach_list): {len(detach_list_model.lan_attach_list)}."
-            self.log.debug(msg)
-            msg = f"{json.dumps(detach_list_model.model_dump(by_alias=False), indent=4, sort_keys=True)}"
-            self.log.debug(msg)
-            if detach_list_model.lan_attach_list:
-                diff_detach.append(detach_list_model)
-                all_vrfs.add(detach_list_model.vrf_name)
-        if len(all_vrfs) != 0:
+
+                detach_list_model: VrfDetachPayloadV12 = self.get_items_to_detach_model(have_attach_model.lan_attach_list)
+                if not detach_list_model:
+                    msg = "detach_list_model is None. continuing."
+                    self.log.debug(msg)
+                    continue
+                msg = f"detach_list_model: length(lan_attach_list): {len(detach_list_model.lan_attach_list)}."
+                self.log.debug(msg)
+                msg = f"{json.dumps(detach_list_model.model_dump(by_alias=False), indent=4, sort_keys=True)}"
+                self.log.debug(msg)
+                if detach_list_model.lan_attach_list:
+                    diff_detach.append(detach_list_model)
+                    all_vrfs.add(detach_list_model.vrf_name)
+        if len(all_vrfs) != 0 and self.action_fabric_type != "Child MSD":
             diff_undeploy.update({"vrfNames": ",".join(all_vrfs)})
 
         self.diff_detach = diff_detach
@@ -2366,11 +2400,12 @@ class NdfcVrf12:
             # VRF exists on the controller but is not in the want list.  Detach and delete it.
             vrf_detach_payload = self.get_items_to_detach_model(have_attach_model.lan_attach_list)
             if vrf_detach_payload:
-                self.diff_detach.append(vrf_detach_payload)
-                all_vrfs.add(vrf_detach_payload.vrf_name)
+                if self.action_fabric_type != "Child MSD":
+                    self.diff_detach.append(vrf_detach_payload)
+                    all_vrfs.add(vrf_detach_payload.vrf_name)
                 self.diff_delete.update({vrf_detach_payload.vrf_name: "DEPLOYED"})
 
-        if len(all_vrfs) != 0:
+        if len(all_vrfs) != 0 and self.action_fabric_type != "Child MSD":
             self.diff_undeploy.update({"vrfNames": ",".join(all_vrfs)})
 
         msg = "self.diff_delete: "
@@ -2406,6 +2441,11 @@ class NdfcVrf12:
 
         all_vrfs: set = set()
         self.get_diff_merge(replace=True)
+
+        if self.action_fabric_type == "Child MSD":
+            # In Child MSD fabric, attach and deploy 
+            # operations are not processed.
+            return
 
         msg = f"self.have_attach_models: length: {len(self.have_attach_models)}."
         self.log.debug(msg)
@@ -2637,7 +2677,7 @@ class NdfcVrf12:
         msg = f"replace == {replace}."
         self.log.debug(msg)
 
-        if not self.want_attach:
+        if not self.want_attach or self.action_fabric_type == "Child MSD":
             self.diff_attach = []
             self.diff_deploy = {}
             msg = "Early return. No attachments to process."
@@ -2735,6 +2775,44 @@ class NdfcVrf12:
         msg = "self.diff_attach: "
         msg += f"{json.dumps(self.diff_attach, indent=4)}"
         self.log.debug(msg)
+
+        msg = "self.diff_deploy: "
+        msg += f"{json.dumps(self.diff_deploy, indent=4)}"
+        self.log.debug(msg)
+
+    def diff_merge_no_attach(self):
+        caller = inspect.stack()[1][3]
+
+        msg = "ENTERED. "
+        msg += f"caller: {caller}. "
+        self.log.debug(msg)
+
+        if self.action_fabric_type == "Child MSD":
+            # In Child MSD fabric, attach and deploy
+            # operations are not processed.
+            return
+
+        diff_deploy = self.diff_deploy
+        all_vrfs: set = set()  # This should be a list to match usage below
+
+        if not self.want_deploy or not self.chg_deploy:
+            msg = "No vrfs to deploy. Returning"
+            self.log.debug(msg)
+            return
+
+        for vrf_name in self.want_deploy["vrfNames"].split(","):
+            self.log.debug(f"VRF Name : {vrf_name}")
+            if not self.want_attach and vrf_name in self.chg_deploy["vrfNames"].split(","):
+                all_vrfs.append(vrf_name)  # Using append() on a set
+
+        if all_vrfs:
+            if not diff_deploy:
+                diff_deploy.update({"vrfNames": ",".join(all_vrfs)})
+            else:
+                vrfs = self.diff_deploy["vrfNames"] + "," + ",".join(all_vrfs)
+                diff_deploy.update({"vrfNames": vrfs})
+
+            self.diff_deploy = diff_deploy
 
         msg = "self.diff_deploy: "
         msg += f"{json.dumps(self.diff_deploy, indent=4)}"
