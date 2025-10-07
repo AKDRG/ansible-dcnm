@@ -52,7 +52,7 @@ from .model_controller_response_vrfs_v12 import ControllerResponseVrfsV12, VrfOb
 from .model_have_attach_post_mutate_v12 import HaveAttachPostMutate, HaveLanAttachItem
 from .model_payload_vrfs_attachments import PayloadVrfsAttachmentsLanAttachListItem
 from .model_payload_vrfs_deployments import PayloadVrfsDeployments
-from .model_playbook_vrf_v12 import PlaybookVrfAttachModel, PlaybookVrfModelV12
+from .model_playbook_vrf_v12 import PlaybookVrfAttachModel, PlaybookVrfModelV12, PlaybookParentFabricConfigModel, PlaybookChildFabricConfigModel
 from .model_vrf_detach_payload_v12 import LanDetachListItemV12, VrfDetachPayloadV12
 from .transmute_diff_attach_to_payload import DiffAttachToControllerPayload
 from .vrf_controller_payload_v12 import VrfPayloadV12
@@ -68,6 +68,7 @@ dcnm_vrf_paths: dict = {
     "GET_NET_VRF": "/appcenter/cisco/ndfc/api/v1/lan-fabric/rest/top-down/fabrics/{}/networks?vrf-name={}",
 }
 
+PlaybookVrfModel = None
 
 @dataclass
 class SendToControllerArgs:
@@ -177,7 +178,8 @@ class NdfcVrf12:
         self.want_attach_vrf_lite: dict = {}
         self.diff_attach: list = []
         self.validated_playbook_config: list = []
-        self.validated_playbook_config_models: list[PlaybookVrfModelV12] = []
+        # Using Union of possible model types instead of the variable
+        self.validated_playbook_config_models: list[Union[PlaybookVrfModelV12, PlaybookParentFabricConfigModel, PlaybookChildFabricConfigModel]] = []
         # diff_detach contains all attachments of a vrf being deleted,
         # especially for state: OVERRIDDEN
         # The diff_detach and delete operations have to happen before
@@ -232,6 +234,13 @@ class NdfcVrf12:
             msg = f"{self.class_name}.__init__(): "
             msg += "'fabricType' parameter is missing from self.params."
             self.module.fail_json(msg=msg)
+
+        if self.action_fabric_type == "Standard":
+            PlaybookVrfModel = PlaybookVrfModelV12
+        elif self.action_fabric_type == "Parent MSD":
+            PlaybookVrfModel = PlaybookParentFabricConfigModel
+        elif self.action_fabric_type == "Child MSD":
+            PlaybookVrfModel = PlaybookChildFabricConfigModel
 
         try:
             self.fabric_nvpairs: dict = self.fabric_data["nvPairs"]
@@ -1225,11 +1234,11 @@ class NdfcVrf12:
 
         return create, configuration_changed
 
-    def transmute_playbook_model_to_vrf_create_payload_model(self, vrf_playbook_model: PlaybookVrfModelV12) -> VrfPayloadV12:
+    def transmute_playbook_model_to_vrf_create_payload_model(self, vrf_playbook_model) -> VrfPayloadV12:
         """
         # Summary
 
-        Given an instance of PlaybookVrfModelV12, return an instance of VrfPayloadV12
+        Given an instance of PlaybookVrfModel, return an instance of VrfPayloadV12
         suitable for sending to the controller.
         """
         caller = inspect.stack()[1][3]
@@ -1241,15 +1250,15 @@ class NdfcVrf12:
         if not vrf_playbook_model:
             return vrf_playbook_model
 
-        msg = "vrf_playbook_model (PlaybookVrfModelV12): "
+        msg = "vrf_playbook_model (PlaybookVrfModel): "
         msg += f"{json.dumps(vrf_playbook_model.model_dump(), indent=4, sort_keys=True)}"
         self.log.debug(msg)
 
-        # Transmute PlaybookVrfModelV12 into a vrf_template_config dictionary
+        # Transmute PlaybookVrfModel into a vrf_template_config dictionary
         validated_template_config = VrfTemplateConfigV12.model_validate(vrf_playbook_model.model_dump())
         vrf_template_config_dict = validated_template_config.model_dump_json(by_alias=True)
 
-        # Tramsmute PlaybookVrfModelV12 into VrfPayloadV12
+        # Tramsmute PlaybookVrfModel into VrfPayloadV12
         vrf_payload_v12 = VrfPayloadV12(
             fabric=self.fabric,
             service_vrf_template=vrf_playbook_model.service_vrf_template or "",
@@ -2704,7 +2713,7 @@ class NdfcVrf12:
             self.log.debug(msg)
             # Check user intent for this VRF and don't add it to the all_vrfs
             # set if the user has not requested a deploy.
-            want_config_model: PlaybookVrfModelV12 = self.find_model_in_list_by_key_value(
+            want_config_model = self.find_model_in_list_by_key_value(
                 search=self.validated_playbook_config_models, key="vrf_name", value=want_attach["vrfName"]
             )
             want_config_deploy = want_config_model.deploy if want_config_model else False
@@ -2838,6 +2847,7 @@ class NdfcVrf12:
 
         self.diff_merge_create(replace)
         self.diff_merge_attach(replace)
+        self.diff_merge_no_attach()
 
     def format_diff_attach(self, diff_attach: list[dict], diff_deploy: list[str]) -> list[dict]:
         """
@@ -3118,8 +3128,9 @@ class NdfcVrf12:
         msg += f"{json.dumps(self.diff_detach, indent=4, sort_keys=True)}"
         self.log.debug(msg)
 
-        if not self.diff_detach:
-            msg = "Early return. self.diff_detach is empty."
+        if not self.diff_detach or self.action_fabric_type == "Child MSD":
+            msg = f"Early return. Fabric Type:{self.action_fabric_type}"
+            msg += f"diff_detach: {json.dumps(self.diff_detach, indent=4, sort_keys=True)}"
             self.log.debug(msg)
             return
 
@@ -3180,8 +3191,9 @@ class NdfcVrf12:
         self.log.debug(msg)
         self.log_list_of_models(self.diff_detach, by_alias=False)
 
-        if not self.diff_detach:
-            msg = "Early return. self.diff_detach is empty."
+        if not self.diff_detach or self.action_fabric_type == "Child MSD":
+            msg = f"Early return. Fabric Type:{self.action_fabric_type}"
+            msg += f"diff_detach: {json.dumps(self.diff_detach, indent=4, sort_keys=True)}"
             self.log.debug(msg)
             return
 
@@ -3234,8 +3246,9 @@ class NdfcVrf12:
         msg += f"{json.dumps(self.diff_undeploy, indent=4, sort_keys=True)}"
         self.log.debug(msg)
 
-        if not self.diff_undeploy:
-            msg = "Early return. self.diff_undeploy is empty."
+        if not self.diff_undeploy or self.action_fabric_type == "Child MSD":
+            msg = f"Early return. Fabric Type:{self.action_fabric_type}"
+            msg += f"diff_undeploy: {json.dumps(self.diff_undeploy, indent=4, sort_keys=True)}"
             self.log.debug(msg)
             return
 
@@ -3857,9 +3870,9 @@ class NdfcVrf12:
         msg += f"caller: {caller}. self.model_enabled: {self.model_enabled}."
         self.log.debug(msg)
 
-        if not self.diff_attach:
-            msg = "Early return. self.diff_attach is empty. "
-            msg += f"{json.dumps(self.diff_attach, indent=4, sort_keys=True)}"
+        if not self.diff_attach or self.action_fabric_type == "Child MSD":
+            msg = f"Early return. Fabric Type:{self.action_fabric_type}"
+            msg += f"diff_attach: {json.dumps(self.diff_attach, indent=4, sort_keys=True)}"
             self.log.debug(msg)
             return
 
@@ -3901,8 +3914,9 @@ class NdfcVrf12:
         msg += f"caller: {caller}. self.model_enabled: {self.model_enabled}."
         self.log.debug(msg)
 
-        if not self.diff_deploy:
-            msg = "Early return. self.diff_deploy is empty."
+        if not self.diff_deploy or self.action_fabric_type == "Child MSD":
+            msg = f"Early return. Fabric Type:{self.action_fabric_type}"
+            msg += f"diff_deploy: {json.dumps(self.diff_deploy, indent=4, sort_keys=True)}"
             self.log.debug(msg)
             return
 
@@ -4322,7 +4336,7 @@ class NdfcVrf12:
         """
         # Summary
 
-        Validate self.config against PlaybookVrfModelV12 and update
+        Validate self.config against PlaybookVrfModel and update
         self.validated_playbook_config with the validated config.
 
         ## Raises
@@ -4342,7 +4356,7 @@ class NdfcVrf12:
             try:
                 msg = "Validating playbook configuration."
                 self.log.debug(msg)
-                validated_playbook_config = PlaybookVrfModelV12(**vrf_config)
+                validated_playbook_config = PlaybookVrfModel(**vrf_config)
                 msg = "validated_playbook_config: "
                 msg += f"{json.dumps(validated_playbook_config.model_dump(), indent=4, sort_keys=True)}"
                 self.log.debug(msg)
@@ -4360,7 +4374,7 @@ class NdfcVrf12:
         """
         # Summary
 
-        Validate self.config against PlaybookVrfModelV12 and updates
+        Validate self.config against PlaybookVrfModel and updates
         self.validated_playbook_config_models with the validated config.
 
         ## Raises
@@ -4383,7 +4397,7 @@ class NdfcVrf12:
             try:
                 msg = "Validating playbook configuration."
                 self.log.debug(msg)
-                validated_playbook_config = PlaybookVrfModelV12(**config)
+                validated_playbook_config = PlaybookVrfModel(**config)
             except ValidationError as error:
                 # We need to pass the unaltered ValidationError
                 # directly to the fail_json method for unit tests to pass.
@@ -4601,7 +4615,7 @@ class NdfcVrf12:
         self.log.debug(msg)
 
         # Do not Rollback for Multi-site fabrics
-        if self.fabric_type == "MFD":
+        if self.fabric_type == "MFD" or self.action_fabric_type == "Child MSD":
             self.failed_to_rollback = True
             self.module.fail_json(msg=resp)
             return

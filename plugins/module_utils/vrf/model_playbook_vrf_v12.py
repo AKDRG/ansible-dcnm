@@ -431,3 +431,205 @@ class PlaybookVrfConfigModelV12(BaseModel):
     """
 
     config: list[PlaybookVrfModelV12] = Field(default_factory=list[PlaybookVrfModelV12])
+
+class PlaybookParentFabricConfigModel(BaseModel):
+    """
+    # Summary
+
+    Model for Parent MSD VRF configuration.
+    This model validates VRF parameters specific to Parent MSD fabrics.
+
+    ## Attributes:
+        - vrf_id - integer range (0-16777214)
+        - vlan_id - integer range (0-4094)
+        - vrf_template - string
+        - vrf_extension_template - string
+        - vrf_vlan_name - string
+        - vrf_intf_desc - string
+        - vrf_description - string
+        - vrf_int_mtu - integer range (68-9216)
+        - loopback_route_tag - integer range (0-4294967295)
+        - redist_direct_rmap - string
+        - v6_redist_direct_rmap - string
+        - max_bgp_paths - integer range (1-64)
+        - max_ibgp_paths - integer range (1-64)
+        - ipv6_linklocal_enable - boolean
+        - disable_rt_auto - boolean
+        - import_vpn_rt - string
+        - export_vpn_rt - string
+        - import_evpn_rt - string
+        - export_evpn_rt - string
+        - service_vrf_template - string (optional)
+        - source - string (optional)
+        - child_fabric_config - list of PlaybookChildFabricConfigModel
+    """
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        use_enum_values=True,
+        validate_assignment=True,
+    )
+    
+    # Required fields
+    vrf_name: str = Field(..., min_length=1, max_length=32)
+    
+    # Optional fields with defaults
+    vrf_id: Optional[int] = Field(default=None, le=16777214)
+    vlan_id: Optional[int] = Field(default=None, le=4094)
+    vrf_template: str = Field(default="Default_VRF_Universal")
+    vrf_extension_template: str = Field(default="Default_VRF_Extension_Universal")
+    vrf_vlan_name: str = Field(default="")
+    vrf_intf_desc: str = Field(default="")
+    vrf_description: str = Field(default="")
+    vrf_int_mtu: int = Field(default=9216, ge=68, le=9216)
+    loopback_route_tag: int = Field(default=12345, ge=0, le=4294967295)
+    redist_direct_rmap: str = Field(default="FABRIC-RMAP-REDIST-SUBNET")
+    v6_redist_direct_rmap: str = Field(default="FABRIC-RMAP-REDIST-SUBNET")
+    max_bgp_paths: int = Field(default=1, ge=1, le=64)
+    max_ibgp_paths: int = Field(default=2, ge=1, le=64)
+    ipv6_linklocal_enable: StrictBool = Field(default=True)
+    disable_rt_auto: StrictBool = Field(default=False)
+    import_vpn_rt: str = Field(default="")
+    export_vpn_rt: str = Field(default="")
+    import_evpn_rt: str = Field(default="")
+    export_evpn_rt: str = Field(default="")
+    service_vrf_template: Optional[str] = Field(default=None)
+    source: Optional[str] = Field(default=None)
+    deploy: StrictBool = Field(default=True)
+    
+    # Attachments
+    attach: Optional[list[PlaybookVrfAttachModel]] = None
+
+    @field_validator('max_bgp_paths', 'max_ibgp_paths')
+    @classmethod
+    def validate_path_range(cls, v):
+        if v is not None and (v < 1 or v > 64):
+            raise ValueError('must be between 1 and 64')
+        return v
+    
+    @field_validator('vrf_int_mtu')
+    @classmethod
+    def validate_mtu_range(cls, v):
+        if v is not None and (v < 68 or v > 9216):
+            raise ValueError('must be between 68 and 9216')
+        return v
+        
+    @field_validator('loopback_route_tag')
+    @classmethod
+    def validate_tag_range(cls, v):
+        if v is not None and (v < 0 or v > 4294967295):
+            raise ValueError('must be between 0 and 4294967295')
+        return v
+
+class PlaybookChildFabricConfigModel(BaseModel):
+    """
+    # Summary
+
+    Model for child fabric configuration in Parent MSD fabrics.
+
+    ## Attributes:
+        - fabric_name - string (required)
+        - l3vni_wo_vlan - boolean
+        - adv_default_routes - boolean
+        - adv_host_routes - boolean
+        - static_default_route - boolean
+        - bgp_password - string
+        - bgp_passwd_encrypt - int (3, 7)
+        - netflow_enable - boolean
+        - nf_monitor - string
+        - trm_enable - boolean
+        - no_rp - boolean
+        - rp_address - string (IPv4 host address)
+        - rp_external - boolean
+        - rp_loopback_id - integer
+        - underlay_mcast_ip - string (IPv4 multicast group)
+        - overlay_mcast_group - string (IPv4 multicast group)
+        - trm_bgw_msite - boolean
+        - import_mvpn_rt - string
+        - export_mvpn_rt - string
+    """
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        use_enum_values=True,
+        validate_assignment=True,
+    )
+    fabric_name: str
+    l3vni_wo_vlan: StrictBool = Field(default=False)
+    adv_default_routes: StrictBool = Field(default=True)
+    adv_host_routes: StrictBool = Field(default=False)
+    static_default_route: StrictBool = Field(default=True)
+    bgp_password: str = Field(default="")
+    bgp_passwd_encrypt: BgpPasswordEncrypt = Field(default=BgpPasswordEncrypt.MD5.value)
+    netflow_enable: StrictBool = Field(default=False)
+    nf_monitor: str = Field(default="")
+    trm_enable: StrictBool = Field(default=False)
+    no_rp: StrictBool = Field(default=False)
+    rp_address: str = Field(default="")
+    rp_external: StrictBool = Field(default=False)
+    rp_loopback_id: Optional[Union[int, str]] = Field(default="", ge=-1, le=1023)
+    underlay_mcast_ip: str = Field(default="")
+    overlay_mcast_group: str = Field(default="")
+    trm_bgw_msite: StrictBool = Field(default=False)
+    import_mvpn_rt: str = Field(default="")
+    export_mvpn_rt: str = Field(default="")
+
+    @field_validator("rp_address", mode="before")
+    @classmethod
+    def validate_rp_address(cls, value: str) -> str:
+        """
+        Validate rp_address is an IPv4 host address without prefix.
+        """
+        if value != "":
+            IPv4HostModel(ipv4_host=str(value))
+        return value
+
+    @field_validator("overlay_mcast_group", mode="before")
+    @classmethod
+    def validate_overlay_mcast_group(cls, value: str) -> str:
+        """
+        Validate overlay_mcast_group is an IPv4 multicast group address without prefix.
+        """
+        if value != "":
+            IPv4MulticastGroupModel(ipv4_multicast_group=str(value))
+        return value
+
+    @field_validator("underlay_mcast_ip", mode="before")
+    @classmethod
+    def validate_underlay_mcast_ip(cls, value: str) -> str:
+        """
+        Validate underlay_mcast_ip is an IPv4 multicast group address without prefix.
+        """
+        if value != "":
+            IPv4MulticastGroupModel(ipv4_multicast_group=str(value))
+        return value
+
+    @field_validator("rp_loopback_id", mode="before")
+    @classmethod
+    def validate_rp_loopback_id_before(cls, value: Union[int, str]) -> Union[int, str]:
+        """
+        Validate rp_loopback_id is an integer between 0 and 1023.
+        If it is an empty string, return -1. This will be converted to "" in an "after" validator.
+        """
+        if isinstance(value, str) and value == "":
+            return -1
+        if not isinstance(value, int):
+            try:
+                value = int(value)
+            except (TypeError, ValueError) as error:
+                msg = f"Invalid rp_loopback_id: {value}. It must be an integer between 0 and 1023."
+                msg += f" Error detail: {error}"
+                raise ValueError(msg) from error
+        if value < 0 or value > 1023:
+            raise ValueError(f"Invalid rp_loopback_id: {value}. It must be an integer between 0 and 1023.")
+        return value
+
+    @field_validator("rp_loopback_id", mode="after")
+    @classmethod
+    def validate_rp_loopback_id_after(cls, value: Union[int, str]) -> Union[int, str]:
+        """
+        Convert rp_loopback_id to an empty string if it is -1.
+        """
+        if value == -1:
+            return ""
+        return value

@@ -49,7 +49,7 @@ class VrfControllerToPlaybookV12Model(BaseModel):
     import_mvpn_rt: Optional[str] = Field(alias="routeTargetImportMvpn")
     import_vpn_rt: Optional[str] = Field(alias="routeTargetImport")
     ipv6_linklocal_enable: Optional[bool] = Field(alias="ipv6LinkLocalFlag")
-
+    l3vni_wo_vlan: Optional[bool] = Field(alias="enableL3VniNoVlan")
     loopback_route_tag: Optional[int] = Field(alias="tag")
 
     max_bgp_paths: Optional[int] = Field(alias="maxBgpPaths")
