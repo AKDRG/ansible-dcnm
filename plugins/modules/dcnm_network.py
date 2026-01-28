@@ -3667,6 +3667,11 @@ class DcnmNetwork:
 
             payload_list = []
 
+            is_parent_fabric = (
+                self.fabric_type == "multicluster_parent"
+                or self.fabric_type == "multisite_parent"
+            )
+
             for net in self.diff_create:
                 json_to_dict = json.loads(net["networkTemplateConfig"])
                 vlanId = json_to_dict.get("vlanId", "")
@@ -3719,8 +3724,8 @@ class DcnmNetwork:
 
                 net.update({"networkTemplateConfig": json.dumps(t_conf)})
 
-                # Send individual creates for multicluster_parent or version < 12.2
-                if self.fabric_type == "multicluster_parent" or self.dcnm_version < 12.2:
+                # Send individual creates for multisite/cluster parent or version < 12.2
+                if is_parent_fabric or self.dcnm_version < 12.2:
                     method = "POST"
                     resp = dcnm_send(self.module, method, path, json.dumps(net))
                     self.result["response"].append(resp)
@@ -3734,8 +3739,8 @@ class DcnmNetwork:
                     # Collect for bulk create
                     payload_list.append(net)
 
-            # Send bulk create for non-multicluster_parent fabrics with version >= 12.2
-            if self.fabric_type != "multicluster_parent" and self.dcnm_version >= 12.2 and payload_list:
+            # Send bulk create for standalone fabrics with version >= 12.2
+            if not is_parent_fabric and self.dcnm_version >= 12.2 and payload_list:
                 method = "POST"
                 create_path = self.paths["GET_NET_BULK"].format(self.fabric)
                 resp = dcnm_send(self.module, method, create_path, json.dumps(payload_list))
@@ -4428,7 +4433,8 @@ class DcnmNetwork:
 
             # DHCP servers list configuration
             if cfg.get("dhcp_servers", None) is None:
-                json_to_dict_want["dhcpServers"] = json_to_dict_have.get("dhcpServers", "")
+                if not json_to_dict_want.get("dhcpServers"):
+                    json_to_dict_want["dhcpServers"] = json_to_dict_have.get("dhcpServers", "")
 
             # DHCP loopback configuration
             if cfg.get("dhcp_loopback_id", None) is None:
