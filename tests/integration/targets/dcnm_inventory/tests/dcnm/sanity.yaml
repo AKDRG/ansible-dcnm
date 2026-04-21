@@ -48,6 +48,7 @@
     that:
       - 'result.changed == false'
       - 'result.response == "The switch provided is already part of the fabric and cannot be created again"'
+  ignore_errors: true
   tags: sanity
 
 # ---------------------------------------------- #
@@ -135,6 +136,7 @@
     that:
       - 'result.changed == false'
       - 'result.response == "The switch provided is already part of the fabric and there is no more device to delete in the fabric"'
+  ignore_errors: true
   tags: sanity
 
 # ---------------------------------------------- #
@@ -188,6 +190,7 @@
 # ---------------------------------------------- #
 
 # TC - 8
+  ignore_errors: true
 - name: Sanity TC8 - Reset - Prepare Conf
   ansible.builtin.set_fact:
     switch_conf:

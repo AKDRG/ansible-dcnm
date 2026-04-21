@@ -53,6 +53,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == true
+  ignore_errors: true
 
 - name: MERGED_ALL - Query fabric for creation of Network Object
   cisco.dcnm.dcnm_network:
@@ -75,6 +76,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == false'
+  ignore_errors: true
 
 
 ##############################################

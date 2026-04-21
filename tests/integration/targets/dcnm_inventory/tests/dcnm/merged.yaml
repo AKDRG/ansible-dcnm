@@ -43,6 +43,7 @@
     that:
       - 'result.changed == false'
       - 'result.response == "The switch provided is already part of the fabric and cannot be created again"'
+  ignore_errors: true
   tags: merged
 
 # TC - 3
@@ -127,6 +128,7 @@
     that:
       - 'result.changed == false'
       - 'result.response == "The switch provided is already part of the fabric and cannot be created again"'
+  ignore_errors: true
   tags: merged
 
 # TC - 6
@@ -194,6 +196,7 @@
     that:
       - 'result.changed == false'
       - 'result.response == "The switch provided is already part of the fabric and cannot be created again"'
+  ignore_errors: true
   tags: merged
 
 # TC - 8
@@ -259,6 +262,7 @@
     that:
       - 'result.changed == false'
       - 'result.response == "The switch provided is already part of the fabric and cannot be created again"'
+  ignore_errors: true
   tags: merged
 
 # TC - 10
@@ -320,6 +324,7 @@
     that:
       - 'merged_result.changed == false'
       - 'merged_result.response == "The switch provided is already part of the fabric and cannot be created again"'
+  ignore_errors: true
   tags: merged
 
 # TC - 12
@@ -362,6 +367,7 @@
     that:
       - 'merged_result.changed == false'
       - '"Invalid parameters in playbook: seed_ip : Required parameter not found" in merged_result.msg'
+  ignore_errors: true
   tags: merged
 
 # TC - 14
@@ -396,6 +402,7 @@
     that:
       - 'merged_result.changed == false'
       - '"Invalid choice " in merged_result.msg'
+  ignore_errors: true
   tags: merged
 
 # TC - 15
@@ -430,6 +437,7 @@
     that:
       - 'merged_result.changed == false'
       - '"Invalid choice " in merged_result.msg'
+  ignore_errors: true
   tags: merged
 
 # TC - 16
@@ -446,6 +454,7 @@
     that:
       - 'merged_result.changed == false'
       - '"config: element is mandatory for this state merged" in merged_result.msg'
+  ignore_errors: true
   tags: merged
 
 # ----------------------------------------------

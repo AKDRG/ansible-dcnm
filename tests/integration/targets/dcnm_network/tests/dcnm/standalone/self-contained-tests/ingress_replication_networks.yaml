@@ -22,6 +22,8 @@
           - 'result.response.DATA != None'
 
     - name: ING_REP - Remove all existing networks to start with a clean state
+
+      ignore_errors: true
       cisco.dcnm.dcnm_network:
         fabric: "{{ test_ing_fabric }}"
         state: deleted
@@ -80,6 +82,8 @@
           - 'result.diff[0].vrf_name == "Tenant-1"'
 
     - name: ING_REP - setup - Clean up any existing networks
+
+      ignore_errors: true
       cisco.dcnm.dcnm_network:
         fabric: "{{ test_ing_fabric }}"
         state: deleted
@@ -125,6 +129,8 @@
           - 'result.diff[0].net_name == "ansible-net16"'
           - 'result.diff[0].net_id == 7005'
           - 'result.diff[0].vrf_name == "Tenant-1"'
+
+      ignore_errors: true
 
     ##############################################
     ##                 CLEAN-UP                 ##

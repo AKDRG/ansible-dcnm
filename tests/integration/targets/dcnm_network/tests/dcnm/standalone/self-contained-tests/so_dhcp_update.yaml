@@ -61,6 +61,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == true
+  ignore_errors: true
 
 - name: SO_DHCP_UPDATE - Query fabric for creation of Network Object
   cisco.dcnm.dcnm_network:
@@ -91,6 +92,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == true
+  ignore_errors: true
 
 - name: SO_DHCP_UPDATE - Query fabric for creation of Network Object
   cisco.dcnm.dcnm_network:

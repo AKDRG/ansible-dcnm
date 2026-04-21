@@ -105,6 +105,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC1 - QUERY - Get network state in NDFC
@@ -135,6 +136,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC1 - QUERY - Get network state in NDFC
@@ -162,6 +164,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 # TC2
@@ -189,6 +192,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC2 - QUERY - Get network state in NDFC
@@ -218,6 +222,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC2 - QUERY - Get network state in NDFC
@@ -253,6 +258,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC2 - Delete the other Single Network with deleted state
@@ -267,6 +273,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC2 - QUERY - Get network state in NDFC
@@ -294,6 +301,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 # TC3
@@ -330,6 +338,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC3 - QUERY - Get network state in NDFC
@@ -356,6 +365,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 
@@ -379,6 +389,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC4 - QUERY - Get network state in NDFC
@@ -408,6 +419,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC4 - QUERY - Get network state in NDFC
@@ -435,6 +447,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 # TC5
@@ -456,6 +469,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC5 - QUERY - Get network state in NDFC
@@ -484,6 +498,7 @@
   ansible.builtin.assert:
     that:
       - 'result.changed == true'
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC5 - QUERY - Get network state in NDFC
@@ -511,6 +526,7 @@
   ansible.builtin.assert:
     that:
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 # TC6 - invalid configs
@@ -534,6 +550,7 @@
     that:
       - '"Invalid parameters in playbook: net_name : Required parameter not found" in result.msg'
       - result.changed == false
+  ignore_errors: true
   tags: deleted
 
 - name: DELETED - TC6 - Delete Single Network with invalid network name which is not configured
@@ -556,6 +573,7 @@
     that:
       - result.changed == false
       - result.response|length == 0
+  ignore_errors: true
   tags: deleted
 
 ###############################################

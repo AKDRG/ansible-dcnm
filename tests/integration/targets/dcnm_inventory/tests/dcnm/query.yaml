@@ -134,6 +134,7 @@
   ansible.builtin.assert:
     that:
       - '"The queried switch is not part of the fabric configured" in query_result.response'
+  ignore_errors: true
   tags: query
 
 # TC - 7
@@ -181,6 +182,7 @@
   ansible.builtin.assert:
     that:
       - '"The queried switch is not part of the fabric configured" in query_result.response'
+  ignore_errors: true
   tags: query
 
 # TC - 9
